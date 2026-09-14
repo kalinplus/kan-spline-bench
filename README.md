@@ -1,6 +1,6 @@
 # kan-spline-bench
 
-KAN 因子合成 + 订单簿端到端预测（Track B）：B1 用 KAN 做因子非线性合成（与 LightGBM/MLP 同评测对比），B2 在 FI-2010 订单簿数据上做端到端收益预测（DeepLOB 复现与改进）。
+KAN 因子合成：用 KAN 做因子非线性合成（与 LightGBM/MLP 同评测对比）。
 
 ## 共享基建
 
@@ -20,4 +20,4 @@ ln -s ../agentic-feature-mining/common common
 
 ## 当前状态
 
-初始化完成（2026-09-14），共享基建已通过验收。下一步：B1（Alpha158 → LightGBM/MLP/KAN 三方对比）。
+初始化完成（2026-09-14），共享基建已通过验收。当前批次：B1（#1，Alpha158 四模型主表）→ B3（#3，消融）/ B4（#4，可解释性）。
