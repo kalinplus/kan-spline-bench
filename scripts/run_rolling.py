@@ -34,6 +34,13 @@
 # thresholds (0.0059 KAN-vs-KAN, 0.0083 when any non-KAN model is involved; grey zone
 # 0.003-0.008 may trigger extra seeds — boundary clause, not executed by default).
 #
+# B11 (Issue #19) extension: `--window`/`--norm` train-stage filters (default None =
+# every arm, i.e. unchanged B9 behavior) plus two extra stages — `inventory` (per-cell
+# (model, refit, window, norm, seed) status table, inventory_b11.csv) and `b11` (3-seed
+# expanding x norm-global main table, expanding-B1 per-seed diffs, pre-pinned three-branch
+# upgrade ruling; REPORT.md gains a marker-scoped B11 section). `--stage all` stays the
+# B9 pipeline verbatim.
+#
 # Outputs (common/runs/kan/rolling/, physical files land in the agentic-feature-mining
 # repo via the `common` symlink and are never committed there):
 #   _raw/raw.parquet            — un-normalized Alpha158 (159 cols) 2012-01~2026-07
@@ -452,7 +459,14 @@ def cell_dir(refit, model, window, norm, seed):
     return ROLLING / f"refit_{refit}" / f"{model}_{window}_{norm}{sfx}"
 
 
-def run_train(models, seed, refit_filter):
+def run_train(models, seed, refit_filter, window_filter=None, norm_filter=None):
+    """window_filter/norm_filter (Issue #19) narrow training to one arm — e.g. expanding
+    + global for the B11 extra seeds — so out-of-scope cells are never trained; the
+    metrics.json skip guard still makes every existing cell untouchable."""
+    for name, val, allowed in (("window", window_filter, ("rolling", "expanding")),
+                               ("norm", norm_filter, ("global", "window"))):
+        if val is not None and val not in allowed:
+            raise ValueError(f"--{name} must be one of {allowed}, got {val!r}")
     align = ROLLING / "align_check.json"
     if not align.exists() or not json.load(open(align)).get("passed"):
         raise RuntimeError("raw extraction and a PASSED align gate are prerequisites for training")
@@ -460,7 +474,11 @@ def run_train(models, seed, refit_filter):
         if refit_filter and r["refit"] not in refit_filter:
             continue
         for window in ("rolling", "expanding"):
+            if window_filter and window != window_filter:
+                continue
             for norm in ("global", "window"):
+                if norm_filter and norm != norm_filter:
+                    continue
                 cd = CellData(r, window, norm).build()
                 for model in models:
                     out = cell_dir(r["refit"], model, window, norm, seed)
@@ -750,6 +768,10 @@ def write_report():
           f"| {r['verdict']} |")
     A("")
 
+    b11_keep = ""
+    rep_path = ROLLING / "REPORT.md"
+    if rep_path.exists() and B11_MARKER in rep_path.read_text():
+        b11_keep = "\n" + B11_MARKER + "\n" + rep_path.read_text().split(B11_MARKER, 1)[1]
     seeds_path = ROLLING / "seeds_check.json"
     if seeds_path.exists():
         sc = json.load(open(seeds_path))
@@ -757,8 +779,10 @@ def write_report():
         A(f"- {sc['purpose']}. Triggered by the MLP rolling−expanding deltas landing in the "
           "0.003–0.008 grey zone; KAN and MLP re-run at seeds 43–44 (Ridge is deterministic, "
           "LGB out of clause scope). Reported per model×norm: the per-seed stitched "
-          "rolling−expanding diff of test RankIC. Seed-44 training was interrupted at "
-          "18/32 cells (no complete stitch) by the prior session's shutdown; a seed "
+          "rolling−expanding diff of test RankIC. Seed-44 training was interrupted by the "
+          "prior session's shutdown with 28/32 KAN/MLP cells complete on disk (refit_2023–2025 "
+          "full 8 each, refit_2026 only the 4 rolling cells; one interrupted dir without "
+          "metrics.json), so no complete seed-44 stitch arm exists; a seed "
           "enters an arm only when BOTH its rolling and expanding stitches are complete, so "
           "arms with incomplete seed-44 cells are reported on seeds 42+43.\n")
         A("| model | norm | " + " | ".join(f"diff s{s}" for s in ("42", "43", "44"))
@@ -776,8 +800,9 @@ def write_report():
               "(-0.0079/-0.0082, beyond 0.0059) and stays negative at seed 43 (-0.0051/-0.0057, "
               "just under the threshold); the 2-seed means (-0.0065, -0.0070) remain beyond it. "
               "The MLP grey-zone losses (-0.0051/-0.0048 at s42) hold or deepen at seed 43 "
-              "(-0.0062/-0.0066) — directional, not seed luck. Note: seed-44 training was "
-              "interrupted (14/32 cells, no complete stitch), so per-arm n=2 (seeds 42+43)."
+              "(-0.0062/-0.0066) — directional, not seed luck. Note: seed-44 cells on disk are "
+              "28/32 complete (refit_2023-2025 full 8 each, refit_2026 only the 4 rolling "
+              "cells) with no complete stitch arm, so per-arm n=2 (seeds 42+43)."
             )
         elif not stable:
             A("- Reading: no arm keeps a consistent sign — the seed-42 grey-zone differences "
@@ -795,8 +820,215 @@ def write_report():
       "[,model.pt]}`; stitched series: `stitched/<model>_<window>_<norm>/`; alignment evidence: "
       "`align_check.json`; raw features: `_raw/raw.parquet`; tables: `summary.csv`, "
       "`comparisons.csv`. Code: `scripts/run_rolling.py` (this repo).")
-    (ROLLING / "REPORT.md").write_text("\n".join(lines) + "\n")
+    (ROLLING / "REPORT.md").write_text("\n".join(lines) + "\n" + b11_keep)
     print(f"[report] wrote {ROLLING / 'REPORT.md'}", flush=True)
+
+
+# ---------------------------------------------------------------- stage: B11 (Issue #19)
+
+B11_SEEDS = (42, 43, 44)
+B11_MODELS = ("kan", "mlp", "ridge", "lgb")
+B11_MARKER = "<!-- B11-SECTION (Issue #19) -->"
+
+
+def b11_needed_cells():
+    """Main-table cells (Issue #19): expanding x norm-global x 4 models x 3 seeds."""
+    return {(m, r["refit"], "expanding", "global", s)
+            for m in B11_MODELS for r in REFITS for s in B11_SEEDS}
+
+
+def run_b11_inventory():
+    """Issue #19 acceptance: status of every (model, refit, window, norm, seed) cell in
+    inventory_b11.csv — existing / new_b11 (filled by this task) / missing_needed (the only
+    trainable set) / missing_out_of_scope. Run BEFORE the extra-seed training (baseline)
+    and again after: a cell that flips missing->complete between the two runs is new_b11.
+    Only pre-registered needed cells can ever be labeled new_b11, so retraining an
+    existing cell cannot hide behind a rerun."""
+    needed = b11_needed_cells()
+    inv_path = ROLLING / "inventory_b11.csv"
+    prev = {}
+    if inv_path.exists():
+        for _, row in pd.read_csv(inv_path).iterrows():
+            prev[(row.model, str(row.refit), row.window, row.norm, int(row.seed))] = row.status
+    rows = []
+    for s in B11_SEEDS:
+        for m in B11_MODELS:
+            for r in REFITS:
+                for w in ("rolling", "expanding"):
+                    for n in ("global", "window"):
+                        key = (m, r["refit"], w, n, s)
+                        complete = (cell_dir(r["refit"], m, w, n, s) / "metrics.json").exists()
+                        if complete:
+                            status = "new_b11" if prev.get(key, "").startswith("missing") else "existing"
+                        else:
+                            status = "missing_needed" if key in needed else "missing_out_of_scope"
+                        rows.append({"model": m, "refit": r["refit"], "window": w, "norm": n,
+                                     "seed": s, "status": status})
+    df = pd.DataFrame(rows)
+    df.to_csv(inv_path, index=False)
+    for s in B11_SEEDS:
+        sub = df[(df.seed == s) & (df.window == "expanding") & (df.norm == "global")]
+        print(f"[b11-inventory] needed expanding_global s{s}: {sub.status.value_counts().to_dict()}",
+              flush=True)
+    print(f"[b11-inventory] full grid: {df.status.value_counts().to_dict()} -> {inv_path}", flush=True)
+
+
+def _save_stitched(st, out: Path):
+    out.mkdir(parents=True, exist_ok=True)
+    st["pred"].to_frame("score").to_parquet(out / "pred.parquet")
+    pd.DataFrame({"ic": st["ic"], "rankic": st["rankic"]}).to_csv(out / "ic.csv")
+
+
+def run_b11():
+    """Issue #19: 3-seed (42/43/44) recheck of the expanding arm — per-seed stitched test
+    RankIC for expanding x norm-global, expanding-B1 per-seed diffs, and the pre-pinned
+    three-branch upgrade ruling. norm-window stays at existing KAN/MLP s42/s43 cells
+    (supplementary column only, no new training, per Issue #19)."""
+    run_b11_inventory()
+    main, rows = {}, []
+    for m in B11_MODELS:
+        for s in B11_SEEDS:
+            st = stitched_metrics(m, "expanding", "global", s)
+            main[(m, s)] = st
+            mk = st["metrics"]
+            rows.append({"model": m, "seed": s, "test_rankic": mk["rankic"]["ic_mean"],
+                         **{f"rankic_{y}": mk["rankic_yearly"][y]
+                            for y in ("2023", "2024", "2025", "2026")}})
+            if s != 42:  # s42 stitched dirs already written by the B9 summary stage
+                _save_stitched(st, ROLLING / "stitched" / f"{m}_expanding_global_s{s}")
+    pd.DataFrame(rows).to_csv(ROLLING / "b11_main.csv", index=False)
+
+    supp = {}
+    for m in ("kan", "mlp"):
+        for s in (42, 43):
+            st = stitched_metrics(m, "expanding", "window", s)
+            supp[(m, s)] = st["metrics"]["rankic"]["ic_mean"]
+            if s != 42:
+                _save_stitched(st, ROLLING / "stitched" / f"{m}_expanding_window_s{s}")
+
+    b1_ref = {m: b1_reference(m)["rankic"]["ic_mean"] for m in B11_MODELS}
+    diffs = {(m, s): main[(m, s)]["metrics"]["rankic"]["ic_mean"] - b1_ref[m]
+             for m in B11_MODELS for s in B11_SEEDS}
+    mean = {m: float(np.mean([diffs[(m, s)] for s in B11_SEEDS])) for m in B11_MODELS}
+    std = {m: float(np.std([diffs[(m, s)] for s in B11_SEEDS], ddof=1)) for m in B11_MODELS}
+    dv = [diffs[(m, s)] for m in B11_MODELS for s in B11_SEEDS]
+    same_sign = all(d > 0 for d in dv) or all(d < 0 for d in dv)
+    all_pos = all(v > 0 for v in mean.values())
+    n_over = sum(1 for m in B11_MODELS if abs(mean[m]) > threshold_for(m))
+    if all_pos and n_over >= 2:
+        branch = "A_upgrade"
+        reading = ("all four 3-seed mean diffs are positive and "
+                   f"{n_over} models clear their 2-sigma threshold — upgrade to credible main finding")
+    elif same_sign:
+        branch = "B_maintain"
+        reading = ("all 12 (model x seed) diffs share one sign but fewer than 2 models clear "
+                   "their 2-sigma threshold — keep 'sign-consistent grey zone, recommend adoption'")
+    else:
+        branch = "C_downgrade"
+        reading = "sign flips across the 12 diffs — downgrade to the B9 wording"
+
+    dump_json({
+        "purpose": "Issue #19: expanding x norm-global 3-seed (42/43/44) recheck of the B9 "
+                   "candidate main finding (expanding yearly refit vs B1 full window)",
+        "rule": "pre-pinned three-branch rule (Issue #19): A upgrade = 4 model mean diffs all "
+                "positive AND >=2 models beyond their 2-sigma threshold; B maintain = all 12 "
+                "(model x seed) diffs same sign with A unmet; C downgrade = any sign flip",
+        "b1_reference_rankic": b1_ref,
+        "per_seed": {m: {str(s): {"rankic": main[(m, s)]["metrics"]["rankic"]["ic_mean"],
+                                  "rankic_yearly": main[(m, s)]["metrics"]["rankic_yearly"]}
+                         for s in B11_SEEDS} for m in B11_MODELS},
+        "diff_vs_b1": {m: {str(s): diffs[(m, s)] for s in B11_SEEDS} for m in B11_MODELS},
+        "diff_mean": mean, "diff_std_ddof1": std,
+        "threshold_2sigma": {m: threshold_for(m) for m in B11_MODELS},
+        "all_means_positive": all_pos, "sign_consistent_12": same_sign,
+        "n_models_over_threshold": n_over,
+        "branch": branch, "reading": reading,
+        "norm_window_supplement": {f"{m}_expanding_window_s{s}": v for (m, s), v in supp.items()},
+        "n3_note": "n=3, std ddof=1 (2 dof) — dispersion reference only; the per-seed values, "
+                   "sign consistency and threshold comparisons are the evidence (Issue #19 "
+                   "honesty clause). Ridge is deterministic given data and the S1b LightGBM "
+                   "protocol injects no seed, so their per-seed rows replicate rather than "
+                   "vary; seed variation lives in KAN/MLP.",
+    }, ROLLING / "b11_3seed.json")
+    section = _b11_section(main, supp, b1_ref, diffs, mean, std, branch, reading,
+                           all_pos, n_over, same_sign)
+    rep_path = ROLLING / "REPORT.md"
+    text = rep_path.read_text() if rep_path.exists() else ""
+    if B11_MARKER in text:
+        text = text.split(B11_MARKER, 1)[0].rstrip() + "\n"
+    rep_path.write_text(text + "\n" + B11_MARKER + "\n" + section)
+    print(f"[b11] branch {branch}; wrote b11_main.csv, b11_3seed.json, REPORT.md B11 section", flush=True)
+
+
+def _b11_section(main, supp, b1_ref, diffs, mean, std, branch, reading,
+                 all_pos, n_over, same_sign):
+    lines = []
+    A = lines.append
+    A("## B11 expanding walk-forward three-seed recheck (Issue #19)\n")
+    A("### Inventory first, train only missing cells\n")
+    A("- Per-cell status of the full (model x refit x window x norm x seed) grid: "
+      "`inventory_b11.csv` (`existing` / `new_b11` / `missing_needed` / `missing_out_of_scope`; "
+      "the pre-training run is the baseline, `new_b11` = filled by this task). Pre-training "
+      "disk state: seed 42 full 64; seed 43 KAN/MLP full 32, Ridge/LGB none; seed 44 KAN/MLP "
+      "28/32 (refit_2023-2025 full 8 each, refit_2026 only the 4 rolling cells) plus one "
+      "interrupted dir without metrics.json (`refit_2026/kan_expanding_global_s44` — counts "
+      "as missing and was retrained). Main-table gap = 18 cells (s43 Ridge/LGB 8, s44 "
+      "Ridge/LGB 8, s44 KAN/MLP refit_2026 one each); no existing cell was retrained.\n")
+    A("### Main table: expanding x norm-global, stitched test RankIC, 3 seeds\n")
+    A("| model | s42 | s43 | s44 | mean±std |")
+    A("|---|---|---|---|---|")
+    for m in B11_MODELS:
+        vals = [main[(m, s)]["metrics"]["rankic"]["ic_mean"] for s in B11_SEEDS]
+        A(f"| {m} | " + " | ".join(f"{v:.5f}" for v in vals)
+          + f" | {np.mean(vals):+.5f}±{np.std(vals, ddof=1):.5f} |")
+    A("\nPer-seed yearly splits (RankIC):")
+    A("| model | seed | 2023 | 2024 | 2025 | 2026 |")
+    A("|---|---|---|---|---|---|")
+    for m in B11_MODELS:
+        for s in B11_SEEDS:
+            yv = main[(m, s)]["metrics"]["rankic_yearly"]
+            A(f"| {m} | {s} | " + " | ".join(f"{yv[y]:+.4f}" for y in ("2023", "2024", "2025", "2026")) + " |")
+    A("\n- n=3 honesty clause (Issue #19): std ddof=1 has 2 degrees of freedom — dispersion "
+      "reference only; the per-seed values above and sign consistency are the evidence, "
+      "never mean±std alone. Ridge is deterministic given data and the S1b LightGBM protocol "
+      "injects no seed, so their per-seed rows replicate rather than vary; seed variation "
+      "lives in KAN/MLP.")
+    A("- Supplement (existing cells only, no new training per Issue #19): expanding x "
+      "norm-window stitched RankIC — "
+      + "; ".join(f"{m} s{s} {supp[(m, s)]:.5f}" for m in ("kan", "mlp") for s in (42, 43))
+      + ". s44 has no complete expanding_window stitch (refit_2026 cells missing) and the "
+        "norm-window arm is not extended.\n")
+    A("### expanding − B1 per-seed diffs and the pre-pinned upgrade ruling\n")
+    A("| model | d(s42) | d(s43) | d(s44) | mean±std | 2σ threshold |")
+    A("|---|---|---|---|---|---|")
+    for m in B11_MODELS:
+        A(f"| {m} | " + " | ".join(f"{diffs[(m, s)]:+.5f}" for s in B11_SEEDS)
+          + f" | {mean[m]:+.5f}±{std[m]:.5f} | {threshold_for(m):.4f} |")
+    A("- B1 is a frozen single-point reference (seed-42 GPU runs); its uncertainty is carried "
+      f"by the B7 5-seed variance ruler ({B7_KAN_THRESHOLD} KAN, {B7_ALL_THRESHOLD} "
+      "non-KAN-involving), per Issue #19.")
+    A(f"- Evidence check: all 4 mean diffs positive = {all_pos}; models with |mean| beyond "
+      f"threshold = {n_over}; all 12 (model x seed) diffs same sign = {same_sign}.")
+    A(f"- **Ruling: {branch}** — {reading}.\n")
+    A("### Conclusions\n")
+    if branch == "A_upgrade":
+        A("- Main finding UPGRADED to credible: expanding yearly refit beats the B1 static "
+          "full window beyond seed noise for >=2 models with all four models positive.")
+    elif branch == "B_maintain":
+        A("- Main finding NOT upgraded: it stays a sign-consistent grey-zone effect — all 12 "
+          "(model x seed) expanding−B1 diffs share one sign, but no model mean clears its "
+          "2σ threshold. Recommended with error bars, not claimed as individually credible.")
+    else:
+        A("- Main finding DOWNGRADED to the B9 wording: the expanding−B1 gap does not keep a "
+          "consistent sign across seeds and models.")
+    A("- Deployment wording unchanged (B9 recipe, Issue #19 scope): accumulate, don't "
+      "truncate + yearly expanding refit, normalization stays global (B9: window refit buys "
+      "nothing). Evidence strength qualifier: n=3 seeds, 2 degrees of freedom — directional "
+      "consistency, not inferential statistics.")
+    A("- Artifacts: `inventory_b11.csv`, `b11_main.csv`, `b11_3seed.json`, "
+      "`stitched/<model>_expanding_global_s{43,44}/` and `stitched/<model>_expanding_window_s43/` "
+      "(kan/mlp); code: `scripts/run_rolling.py` stages `inventory`/`b11` (this repo).")
+    return "\n".join(lines) + "\n"
 
 
 def _conclusions(df, get, b1):
@@ -894,10 +1126,15 @@ def _deployment_verdict(get):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--stage", choices=["raw", "align", "train", "summary", "seeds", "report", "all"], default="all")
+    ap.add_argument("--stage", choices=["raw", "align", "train", "summary", "seeds", "report",
+                                        "inventory", "b11", "all"], default="all")
     ap.add_argument("--model", default=None, help="comma-separated subset of kan,mlp,ridge,lgb")
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--refit", default=None, help="comma-separated subset of refit years (debug)")
+    ap.add_argument("--window", default=None, choices=["rolling", "expanding"],
+                    help="train-stage arm filter (default both arms = B9 behavior)")
+    ap.add_argument("--norm", default=None, choices=["global", "window"],
+                    help="train-stage arm filter (default both norms = B9 behavior)")
     args = ap.parse_args()
     ROLLING.mkdir(parents=True, exist_ok=True)
     stages = ["raw", "align", "train", "summary", "report"] if args.stage == "all" else [args.stage]
@@ -910,7 +1147,11 @@ def main():
         elif st == "align":
             run_align()
         elif st == "train":
-            run_train(models, args.seed, refit_filter)
+            run_train(models, args.seed, refit_filter, args.window, args.norm)
+        elif st == "inventory":
+            run_b11_inventory()
+        elif st == "b11":
+            run_b11()
         elif st == "summary":
             df, _ = run_summary()
             run_comparisons(df)
