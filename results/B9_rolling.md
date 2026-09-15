@@ -43,14 +43,14 @@ B1 全窗口参照（GPU seed 42，test 2023-01~2026-07）：Ridge 0.0197（2023
 
 8 组窗口臂差值全部为负号（3 组可信变差、0 组可信变好、其余灰区/噪声带）；归一化臂 8 组差值全部远低于阈值。expanding−B1 四个模型同号为正且都落在灰区——一致的方向性提示（expanding 每 refit 用到了 2024-12 的数据，比 B1 的 2020-12 更新），但单看都不达 2σ。
 
-灰区补种子复核（Issue #15 边界条款：MLP rolling−expanding 落 0.003–0.008 灰区 → KAN/MLP 两臂补 seeds 43–44）：seed 43 全 32 格完成；seed 44 训练被会话中断在 18/32 格，无任何完整拼接臂，故复核用 seeds 42+43。四臂（KAN/MLP × global/window）差值全部同号：KAN global −0.0079→−0.0051、KAN window −0.0082→−0.0057、MLP global −0.0051→−0.0062、MLP window −0.0048→−0.0066——rolling 的劣势是方向性稳定的，不是 seed luck；MLP 灰区差值在 s43 不缩反深。证据：`common/runs/kan/rolling/REPORT.md` §5b 与 `seeds_check.json`。
+灰区补种子复核（Issue #15 边界条款：MLP rolling−expanding 落 0.003–0.008 灰区 → KAN/MLP 两臂补 seeds 43–44）：seed 43 全 32 格完成；seed 44 按目录实际状态为 28/32 格完成（refit_2023–2025 各 8 格齐全，refit_2026 仅 4 格 rolling，另有 1 个无 metrics.json 的中断空目录），无任何完整拼接臂，故复核用 seeds 42+43。四臂（KAN/MLP × global/window）差值全部同号：KAN global −0.0079→−0.0051、KAN window −0.0082→−0.0057、MLP global −0.0051→−0.0062、MLP window −0.0048→−0.0066——rolling 的劣势是方向性稳定的，不是 seed luck；MLP 灰区差值在 s43 不缩反深。证据：`common/runs/kan/rolling/REPORT.md` §5b 与 `seeds_check.json`。
 
 ## 3. 结论
 
 - **① rolling ≥ expanding 不成立——方向相反**。8 组窗口差值全负，KAN（-0.0079/-0.0082）与 LGB（-0.0100）可信变差，MLP 灰区偏负，Ridge 噪声带内偏负。滚动 5 年窗不是升级是降级。
 - **② 2023 塌方年没有被平滑——被放大**。KAN 2023 RankIC：rolling -0.0038 / expanding +0.0156 / B1 +0.0177；LGB：-0.0094 / +0.0061 / +0.0034——rolling 把 2023 直接打成负 RankIC，expanding 与 B1 保持正值。2018–2021 训练窗全是 regime 切换前的数据，恰在 regime 破裂处泛化最差。
 - **③ recency hypothesis 在 test 上被否**。B3「50% ≈ 100%」成立于 2021–2022 valid（平静期，老数据是死重）；但 2023–2026 test 恰好证明老历史在 regime 切换处是保险——丢掉 2012–2017 是净损失。recency 设定的是「必须保留多新」的下限，不是「可以丢多老」的许可。
-- **④ 部署口径：保留全窗口（accumulate, don't truncate）**。rolling-5y 可信差于 expanding 且不优于 B1；若需要周期性重训，expanding walk-forward（每年 refit、训练窗 2012 起不截断）与 B1 灰区内同向略优，是安全配方。归一化层维持全局（窗口重拟合无增益，8 组差值全在噪声带内）。
+- **④ 部署口径：保留全窗口（accumulate, don't truncate）**。rolling-5y 可信差于 expanding 且不优于 B1；若需要周期性重训，expanding walk-forward（每年 refit、训练窗 2012 起不丢历史，尾部 2 日截尾同规）与 B1 灰区内同向略优，是安全配方。归一化层维持全局（窗口重拟合无增益，8 组差值全在噪声带内）。
 
 ## 4. 产物
 
