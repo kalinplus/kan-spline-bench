@@ -505,7 +505,8 @@ def stage_backtest():
 def linear_ref_row():
     """Linear/Ridge reference from the frozen B1 artifacts (no rerun): test RankIC/IC from
     metrics.json; excess/IR/MDD/turnover recomputed arithmetically from the stored
-    backtest_report.csv (B1's metrics.json overwrote annualized_return with the raw one)."""
+    backtest_report.csv (B1's historical metrics.json stored an absolute daily mean under the
+    name annualized_return; renamed abs_daily_return_mean on disk, fix #32)."""
     lin = json.load(open(RUNS / "b1_linear" / "metrics.json"))
     rep = pd.read_csv(RUNS / "b1_linear" / "backtest_report.csv", index_col=0, parse_dates=True)
     daily = rep["return"] - rep["bench"]

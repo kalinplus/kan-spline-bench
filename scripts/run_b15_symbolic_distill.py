@@ -190,13 +190,13 @@ def run_variant(splits, kind: str, edges: pd.DataFrame):
 def backtest_layer_stats(out_dir: Path) -> dict:
     """Read-only summary of one variant's PERSISTED products (no training, no re-scoring).
 
-    Exists because `metrics.json`'s backtest block mixes two series under one dict, and two of
-    its names are wrong. run_b1.py:210 runs qlib `risk_analysis(r - bench)` with its defaults
-    (`freq="day"` -> N=238, `mode="sum"`), then run_b1.py:211 OVERWRITES `annualized_return`
-    with `risk_analysis(report["return"]).iloc[0, 0]` = the FIRST row, i.e. the mean of the
-    ABSOLUTE daily return. So: mean/std/IR/max_drawdown are EXCESS-series stats, while
-    `annualized_return` is an absolute DAILY mean. Both misname and mixed-series have to be
-    spelled out, hence the explicit absolute/excess split below.
+    Exists because the historical `metrics.json` backtest block mixes two series under one dict.
+    run_b1.py:210 runs qlib `risk_analysis(r - bench)` with its defaults (`freq="day"` -> N=238,
+    `mode="sum"`), while the pre-fix run_b1.py:211 OVERWROTE `annualized_return` with
+    `risk_analysis(report["return"]).iloc[0, 0]` = the FIRST row, i.e. the mean of the ABSOLUTE
+    daily return. So: mean/std/IR/max_drawdown are EXCESS-series stats, while that field (now
+    renamed `abs_daily_return_mean` on disk, fix #32) was an absolute DAILY mean. Mixed-series
+    has to be spelled out, hence the explicit absolute/excess split below.
 
     Equity curve: use the `account` column (= `value` + `cash`). `return` is qlib's
     `return_rate = (now_earning + now_cost) / last_account_value` (backtest/account.py:283) —
