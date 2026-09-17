@@ -208,13 +208,20 @@ def backtest_layer_stats(out_dir: Path) -> dict:
     ex, cum = r - b, (r - b).cumsum()
     return {
         "n_test_days": int(len(bt)),
+        "interval": [str(bt.index.min().date()), str(bt.index.max().date())],
         "backtest": {
             "daily_abs_return_mean": float(r.mean()),
+            "daily_abs_return_annualized_x238": float(r.mean() * 238),  # qlib risk_analysis scaler
+            "daily_abs_return_annualized_x242": float(r.mean() * 242),  # 860 days / 3.55y implied
             "daily_abs_return_sum": float(r.sum()),
             "daily_abs_return_compounded": float((1 + r).prod() - 1),
             "daily_excess_return_mean": float(ex.mean()),
             "daily_excess_return_std": float(ex.std(ddof=1)),
             "information_ratio_sqrt238": float(ex.mean() / ex.std(ddof=1) * np.sqrt(238)),
+            "information_ratio_sqrt242": float(ex.mean() / ex.std(ddof=1) * np.sqrt(242)),
+            # wrong variants kept on purpose: disambiguate metrics.information_ratio (see report 3.1)
+            "information_ratio_abs_sqrt238": float(r.mean() / r.std(ddof=1) * np.sqrt(238)),
+            "information_ratio_abs_sqrt242": float(r.mean() / r.std(ddof=1) * np.sqrt(242)),
             "additive_cum_drawdown": float((cum - cum.cummax()).min()),
             "daily_turnover_mean": float(bt["turnover"].mean()),
             "daily_cost_mean": float(bt["cost"].mean()),
@@ -224,8 +231,10 @@ def backtest_layer_stats(out_dir: Path) -> dict:
             "monotonicity_spearman_groupidx_meanret": float(spearmanr(range(len(groups)), gm.values).statistic),
             "long_short_daily_mean": float(ls.mean()),
             "long_short_daily_std": float(ls.std()),
+            "long_short_ir_daily": float(ls.mean() / ls.std()),
             "long_short_ir_sqrt238": float(ls.mean() / ls.std() * np.sqrt(238)),
             "long_short_pos_rate": float((ls > 0).mean()),
+            "extreme_groups": {"g0": float(gm[groups[0]]), "g9": float(gm[groups[-1]])},
         },
         "pred": {
             "std": float(pred.std()),
@@ -237,6 +246,9 @@ def backtest_layer_stats(out_dir: Path) -> dict:
 
 def write_layer_compare() -> dict:
     compare = {k: backtest_layer_stats(RUNS / k) for k in ("distilled", "kan_control")}
+    # interval equality is what rules out "the IR gap is just a different window" — assert it, don't assume
+    d, c = compare["distilled"], compare["kan_control"]
+    assert d["n_test_days"] == c["n_test_days"] and d["interval"] == c["interval"], (d["interval"], c["interval"])
     with open(RUNS / "backtest_layer_compare.json", "w") as f:
         json.dump(compare, f, indent=2, default=float)
     print(f"[b15] backtest/layered compare -> {RUNS}/backtest_layer_compare.json", flush=True)
