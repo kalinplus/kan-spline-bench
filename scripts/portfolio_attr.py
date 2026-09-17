@@ -118,7 +118,7 @@ def run_backtest(pred: pd.Series, topk: int, n_drop: int):
 
 def perf_from_report(report: pd.DataFrame) -> dict:
     perf = {k: float(v) for k, v in risk_analysis(report["return"] - report["bench"]).iloc[:, 0].items()}
-    perf["annualized_return"] = float(risk_analysis(report["return"]).iloc[0, 0])
+    perf["annualized_return"] = float(risk_analysis(report["return"]).iloc[:, 0]["annualized_return"])
     perf["excess_mean_bp"] = float((report["return"] - report["bench"]).mean() * 1e4)
     perf["cost_bp"] = float(report["cost"].mean() * 1e4)
     perf["daily_turnover_mean"] = float(report["turnover"].mean())
