@@ -24,6 +24,7 @@ import numpy as np
 import pandas as pd
 import torch
 import torch.nn as nn
+from scipy.stats import spearmanr
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import qlib  # noqa: E402
@@ -186,14 +187,80 @@ def run_variant(splits, kind: str, edges: pd.DataFrame):
     return metrics
 
 
+def backtest_layer_stats(out_dir: Path) -> dict:
+    """Read-only summary of one variant's PERSISTED products (no training, no re-scoring).
+
+    Exists because `metrics.json`'s backtest block is easy to misread: run_b1/run_b15 write
+    `annualized_return = risk_analysis(report["return"]).iloc[0, 0]`, which is risk_analysis's
+    FIRST row = the mean of the absolute daily return (qlib's risk_analysis rows are
+    mean/std/annualized_return/information_ratio/max_drawdown), NOT an annualized figure.
+    The `mean`/`std`/`information_ratio`/`max_drawdown` fields come from the EXCESS series
+    (return - bench); risk_analysis defaults to N=238 (qlib's day scaler, not 252) and
+    max_drawdown is the ADDITIVE cumsum drawdown of that excess series.
+    Reporting the underlying quantities explicitly keeps the口径 verifiable.
+    """
+    bt = pd.read_csv(out_dir / "backtest_report.csv", parse_dates=["datetime"]).set_index("datetime")
+    lay = pd.read_csv(out_dir / "layered.csv", parse_dates=["datetime"]).set_index("datetime")
+    pred = pd.read_parquet(out_dir / "pred.parquet")["score"]
+    groups = [c for c in lay.columns if c != "long_short"]
+    gm, ls = lay[groups].mean(), lay["long_short"]
+    r, b = bt["return"], bt["bench"]
+    ex, cum = r - b, (r - b).cumsum()
+    return {
+        "n_test_days": int(len(bt)),
+        "backtest": {
+            "daily_abs_return_mean": float(r.mean()),
+            "daily_abs_return_sum": float(r.sum()),
+            "daily_abs_return_compounded": float((1 + r).prod() - 1),
+            "daily_excess_return_mean": float(ex.mean()),
+            "daily_excess_return_std": float(ex.std(ddof=1)),
+            "information_ratio_sqrt238": float(ex.mean() / ex.std(ddof=1) * np.sqrt(238)),
+            "additive_cum_drawdown": float((cum - cum.cummax()).min()),
+            "daily_turnover_mean": float(bt["turnover"].mean()),
+            "daily_cost_mean": float(bt["cost"].mean()),
+        },
+        "layered": {
+            "group_mean_returns": {c: float(gm[c]) for c in groups},
+            "monotonicity_spearman_groupidx_meanret": float(spearmanr(range(len(groups)), gm.values).statistic),
+            "long_short_daily_mean": float(ls.mean()),
+            "long_short_daily_std": float(ls.std()),
+            "long_short_ir_sqrt238": float(ls.mean() / ls.std() * np.sqrt(238)),
+            "long_short_pos_rate": float((ls > 0).mean()),
+        },
+        "pred": {
+            "std": float(pred.std()),
+            "iqr": float(pred.quantile(0.75) - pred.quantile(0.25)),
+            "mean_daily_cross_sectional_range": float(pred.groupby(level=0).apply(lambda x: x.max() - x.min()).mean()),
+        },
+    }
+
+
+def write_layer_compare() -> dict:
+    compare = {k: backtest_layer_stats(RUNS / k) for k in ("distilled", "kan_control")}
+    with open(RUNS / "backtest_layer_compare.json", "w") as f:
+        json.dump(compare, f, indent=2, default=float)
+    print(f"[b15] backtest/layered compare -> {RUNS}/backtest_layer_compare.json", flush=True)
+    return compare
+
+
 def main():
+    import argparse
+
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--summary-only", action="store_true",
+                    help="summarize persisted products only (no qlib init, no training)")
+    args = ap.parse_args()
     RUNS.mkdir(parents=True, exist_ok=True)
+    if args.summary_only:
+        write_layer_compare()
+        return
     qlib.init(provider_uri=b1.DATA_DIR, region=REG_CN)  # backtest_daily needs qlib data
     edges = load_strongest_edges()
 
     metrics_d = run_variant(splits=b1.prepare_data(), kind="distilled", edges=edges)
     metrics_c = run_variant(splits=b1.prepare_data(), kind="control", edges=edges)
     write_formula_tables(edges)
+    write_layer_compare()
 
     ret_d, ret_c = metrics_d["rankic"]["ic_mean"], metrics_c["rankic"]["ic_mean"]
     retention = {
@@ -202,7 +269,10 @@ def main():
         "b1_kan_reference_test_rankic": 0.026425067147420527,
         "retention_vs_control": ret_d / ret_c,
         "retention_vs_b1_reference": ret_d / 0.026425067147420527,
-        "note": "test scored once per model; retention = distilled / control (paired, same script)",
+        "ic": {"distilled": metrics_d["ic"]["ic_mean"], "control": metrics_c["ic"]["ic_mean"],
+               "retention_vs_control": metrics_d["ic"]["ic_mean"] / metrics_c["ic"]["ic_mean"]},
+        "note": "test scored once per model; retention = distilled / control (paired, same script); "
+                "IC retention (Pearson) is far lower than RankIC retention by design — see report",
     }
     with open(RUNS / "retention.json", "w") as f:
         json.dump(retention, f, indent=2)
