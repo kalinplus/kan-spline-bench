@@ -16,6 +16,7 @@ MLP [158,224,1]-ReLU vs KAN [158,24,1]（grid 5，order 3，grid_range ±3）：
 
 注：LightGBM 参数量与训练时间为 S1b 历史运行，未记录（n/a）；其余三列同机同协议本次实测。
 超参记录：Linear/Ridge 与 MLP/KAN 的 valid 选择细节见 `common/runs/kan/b1_*/metrics.json` 的 `train` 块。
+注（B12 增补）：LightGBM 行超参为 Qlib 官方 benchmark 值，出处 `agentic-feature-mining/common/scripts/run_alpha158_lgb.py`（代码注释即 "official hyperparams"；该组值系 Qlib 团队在其 benchmark 年代 ~2008–2020 数据上调优），本项目此前未做本地调参；本地调参变体（24 组网格，valid 选型、test 只评一次）见 B12：`results/B12_baseline_significance.md` 与 `common/runs/kan/b12_baseline_significance/w1_lgb/`。
 
 ## 2. 分年度 RankIC（test 按自然年拆分）
 
