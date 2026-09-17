@@ -190,42 +190,59 @@ def run_variant(splits, kind: str, edges: pd.DataFrame):
 def backtest_layer_stats(out_dir: Path) -> dict:
     """Read-only summary of one variant's PERSISTED products (no training, no re-scoring).
 
-    Exists because `metrics.json`'s backtest block is easy to misread: run_b1/run_b15 write
-    `annualized_return = risk_analysis(report["return"]).iloc[0, 0]`, which is risk_analysis's
-    FIRST row = the mean of the absolute daily return (qlib's risk_analysis rows are
-    mean/std/annualized_return/information_ratio/max_drawdown), NOT an annualized figure.
-    The `mean`/`std`/`information_ratio`/`max_drawdown` fields come from the EXCESS series
-    (return - bench); risk_analysis defaults to N=238 (qlib's day scaler, not 252) and
-    max_drawdown is the ADDITIVE cumsum drawdown of that excess series.
-    Reporting the underlying quantities explicitly keeps the口径 verifiable.
+    Exists because `metrics.json`'s backtest block mixes two series under one dict, and two of
+    its names are wrong. run_b1.py:210 runs qlib `risk_analysis(r - bench)` with its defaults
+    (`freq="day"` -> N=238, `mode="sum"`), then run_b1.py:211 OVERWRITES `annualized_return`
+    with `risk_analysis(report["return"]).iloc[0, 0]` = the FIRST row, i.e. the mean of the
+    ABSOLUTE daily return. So: mean/std/IR/max_drawdown are EXCESS-series stats, while
+    `annualized_return` is an absolute DAILY mean. Both misname and mixed-series have to be
+    spelled out, hence the explicit absolute/excess split below.
+
+    Equity curve: use the `account` column (= `value` + `cash`). `return` is qlib's
+    `return_rate = (now_earning + now_cost) / last_account_value` (backtest/account.py:283) —
+    a position-view earning rate, NOT the account compounding rate, so `(1+return).prod() - 1`
+    does not reproduce account growth. Net value and percentage drawdown must come from
+    `account`; using `value` alone (position market value, excludes cash) is wrong.
     """
     bt = pd.read_csv(out_dir / "backtest_report.csv", parse_dates=["datetime"]).set_index("datetime")
     lay = pd.read_csv(out_dir / "layered.csv", parse_dates=["datetime"]).set_index("datetime")
     pred = pd.read_parquet(out_dir / "pred.parquet")["score"]
+    raw = json.load(open(out_dir / "metrics.json"))["backtest"]  # field names are wrong; see docstring
     groups = [c for c in lay.columns if c != "long_short"]
     gm, ls = lay[groups].mean(), lay["long_short"]
     r, b = bt["return"], bt["bench"]
-    ex, cum = r - b, (r - b).cumsum()
+    ex, acct, n = r - b, bt["account"], len(bt)
+    ratio = acct.iloc[-1] / acct.iloc[0]
     return {
-        "n_test_days": int(len(bt)),
+        "n_test_days": n,
         "interval": [str(bt.index.min().date()), str(bt.index.max().date())],
-        "backtest": {
-            "daily_abs_return_mean": float(r.mean()),
-            "daily_abs_return_annualized_x238": float(r.mean() * 238),  # qlib risk_analysis scaler
-            "daily_abs_return_annualized_x242": float(r.mean() * 242),  # 860 days / 3.55y implied
-            "daily_abs_return_sum": float(r.sum()),
-            "daily_abs_return_compounded": float((1 + r).prod() - 1),
-            "daily_excess_return_mean": float(ex.mean()),
-            "daily_excess_return_std": float(ex.std(ddof=1)),
-            "information_ratio_sqrt238": float(ex.mean() / ex.std(ddof=1) * np.sqrt(238)),
-            "information_ratio_sqrt242": float(ex.mean() / ex.std(ddof=1) * np.sqrt(242)),
-            # wrong variants kept on purpose: disambiguate metrics.information_ratio (see report 3.1)
-            "information_ratio_abs_sqrt238": float(r.mean() / r.std(ddof=1) * np.sqrt(238)),
-            "information_ratio_abs_sqrt242": float(r.mean() / r.std(ddof=1) * np.sqrt(242)),
-            "additive_cum_drawdown": float((cum - cum.cummax()).min()),
-            "daily_turnover_mean": float(bt["turnover"].mean()),
-            "daily_cost_mean": float(bt["cost"].mean()),
+        "years_at_238_days_per_year": float(n / 238.0),
+        "net_value": {  # account column = value + cash
+            "account_start": float(acct.iloc[0]),
+            "account_end": float(acct.iloc[-1]),
+            "account_ratio": float(ratio),
+            "account_validated_as_value_plus_cash": bool(np.allclose(bt["value"] + bt["cash"], acct)),
+            "cagr_238": float(ratio ** (238 / n) - 1),
+            "max_drawdown_pct_account": float((acct / acct.cummax() - 1).min()),
+            "max_drawdown_pct_value_only": float((bt["value"] / bt["value"].cummax() - 1).min()),
+            "compound_of_return_col": float((1 + r).prod() - 1),
         },
+        "absolute": {
+            "daily_mean": float(r.mean()),
+            "annualized_sum_x238": float(r.mean() * 238),
+            "daily_vol": float(r.std(ddof=1)),
+            "ir_sqrt238": float(r.mean() / r.std(ddof=1) * np.sqrt(238)),
+        },
+        "excess": {
+            "daily_mean": float(ex.mean()),
+            "annualized_sum_x238": float(ex.mean() * 238),
+            "daily_vol": float(ex.std(ddof=1)),
+            "ir_sqrt238": float(ex.mean() / ex.std(ddof=1) * np.sqrt(238)),
+            "arithmetic_cum_drawdown": float((ex.cumsum() - ex.cumsum().cummax()).min()),
+        },
+        "trading": {"daily_turnover_mean": float(bt["turnover"].mean()),
+                    "daily_cost_mean": float(bt["cost"].mean())},
+        "metrics_json_raw": {k: float(v) for k, v in raw.items()},
         "layered": {
             "group_mean_returns": {c: float(gm[c]) for c in groups},
             "monotonicity_spearman_groupidx_meanret": float(spearmanr(range(len(groups)), gm.values).statistic),
