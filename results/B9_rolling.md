@@ -45,6 +45,10 @@ B1 全窗口参照（GPU seed 42，test 2023-01~2026-07）：Ridge 0.0197（2023
 
 灰区补种子复核（Issue #15 边界条款：MLP rolling−expanding 落 0.003–0.008 灰区 → KAN/MLP 两臂补 seeds 43–44）：seed 43 全 32 格完成；seed 44 按目录实际状态为 28/32 格完成（refit_2023–2025 各 8 格齐全，refit_2026 仅 4 格 rolling，另有 1 个无 metrics.json 的中断空目录），无任何完整拼接臂，故复核用 seeds 42+43。四臂（KAN/MLP × global/window）差值全部同号：KAN global −0.0079→−0.0051、KAN window −0.0082→−0.0057、MLP global −0.0051→−0.0062、MLP window −0.0048→−0.0066——rolling 的劣势是方向性稳定的，不是 seed luck；MLP 灰区差值在 s43 不缩反深。证据：`common/runs/kan/rolling/REPORT.md` §5b 与 `seeds_check.json`。
 
+## 2b. LGB norm 双臂差异说明（B12 增补，回应外部评审 sanity check）
+
+四模型中 LGB 是 norm 两臂差值稍大的一支（norm-window − norm-global：rolling 臂 +0.0027 / expanding 臂 −0.0021，其余三模型均在 ±0.0005 内），但仍全部远低于 B7 阈值、方向在两臂间不一致。幅度集中于树模型可由处理链的两处非线性解释：① RobustZScoreNorm 的 clip ±3 是非线性压缩，norm-window 重拟合出的 median/MAD 略移，会改变各分位落进 clip 区间的位置——被压到 ±3 边界的样本集合不同；② Fillna(0) 把缺失填在归一化尺度的 0 点，而 0 所对的分位位置随 median/MAD 漂移。树模型的分裂阈值直接作用在归一化值上，对输入的单调重参数化本应不变（这是树模型仅存的不变性）；正是 clip 的非线性和 Fillna 的分位位置漂移破坏了这种单调不变性，使归一化统计的微小漂移移动了样本跨越分裂阈值的命中集合，且效应方向随窗口/年份而异。这是预期行为而非管线异常：对齐门槛 max|Δ|=0 保证的是 norm-global 臂与 `_cache` 逐值一致，norm-window 臂本来就是有意不同分布的特征，两臂差值落在噪声带内说明全局归一化没有系统性吃亏。
+
 ## 3. 结论
 
 - **① rolling ≥ expanding 不成立——方向相反**。8 组窗口差值全负，KAN（-0.0079/-0.0082）与 LGB（-0.0100）可信变差，MLP 灰区偏负，Ridge 噪声带内偏负。滚动 5 年窗不是升级是降级。
