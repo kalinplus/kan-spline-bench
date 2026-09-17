@@ -43,6 +43,12 @@ SNAP_R2 = 0.95         # R2 above this -> snapped
 SNAP_R2_BORDER = 0.90  # between this and SNAP_R2 -> borderline
 NEGLIGIBLE = 1e-3      # edges with max|phi| below this are "negligible" (dead) edges
 
+# B13 density-overlay caliber (figure evidence only — never feeds any analysis output)
+DENSITY_BINS = 60      # train-input histogram bins on [-3, 3]
+DENSITY_TAIL_Q = 0.5   # train mass outside [q, 100-q] percentile = low-density zone
+SHAPE_MASS_HIGH = 0.90 # shape-mass ratio >= this -> shape body sits in high-density region
+SHAPE_MASS_LOW = 0.60  # ratio < this -> shape body mostly extrapolated (reading downgraded)
+
 # candidate symbolic family: name -> f(t); the fitted form is a*f(b*x+c)+d
 CANDIDATES = {
     "x": lambda t: t,
@@ -370,10 +376,64 @@ def run_compare(imp_df, lgb_df):
     return j, summary
 
 
+# ---------------------------------------------------------------- density overlay (B13)
+
+
+def train_density(top_names, X, feat_names):
+    """Training-set input density per top feature: bin shares on [-3,3] plus the central
+    [q, 100-q] percentile band; mass outside the band is the low-density zone where the
+    spline shape is extrapolation and must not be read. Figure-only evidence (B13)."""
+    idx = {n: k for k, n in enumerate(feat_names)}
+    edges = np.linspace(KAN_GRID_RANGE[0], KAN_GRID_RANGE[1], DENSITY_BINS + 1)
+    out = {}
+    for n in top_names:
+        col = np.clip(X[:, idx[n]], KAN_GRID_RANGE[0], KAN_GRID_RANGE[1])
+        shares, _ = np.histogram(col, bins=edges)
+        lo, hi = np.percentile(col, [DENSITY_TAIL_Q, 100.0 - DENSITY_TAIL_Q])
+        out[n] = {"bin_shares": (shares / len(col)).astype(np.float32),
+                  "lo": float(lo), "hi": float(hi)}
+    return out
+
+
+def dump_density_report(xs, phi, imp, names, strongest, X, feat_names):
+    """Per top-feature: where does the strongest edge's shape variation actually live?
+    shape_mass_ratio = share of int|phi - median(phi)| inside the high-density band;
+    low ratio means the reading rests on extrapolated tails (downgrade the wording).
+    Persisted to explain/density_overlay.json so the report numbers are reproducible."""
+    order = np.argsort(-imp)[:TOP_PLOT]
+    dens = train_density([names[i] for i in order], X, feat_names)
+    rows = {}
+    for i in order:
+        name = names[i]
+        d = dens[name]
+        y = phi[:, i, strongest[i]]
+        dev = np.abs(y - np.median(y))
+        total = float(np.trapz(dev, xs))
+        mask = (xs >= d["lo"]) & (xs <= d["hi"])
+        central = float(np.trapz(dev[mask], xs[mask]))
+        ratio = central / total if total > 1e-12 else 1.0
+        verdict = "high" if ratio >= SHAPE_MASS_HIGH else (
+            "mostly_high" if ratio >= SHAPE_MASS_LOW else "low")
+        rows[name] = {"band_lo": d["lo"], "band_hi": d["hi"],
+                      "shape_mass_ratio": round(ratio, 4), "verdict": verdict}
+    with open(OUT / "density_overlay.json", "w") as f:
+        json.dump({"_caliber": {
+            "bins": DENSITY_BINS, "tail_percentile": DENSITY_TAIL_Q,
+            "shape_mass": "share of int|phi-median(phi)| inside the band; "
+                          f">={SHAPE_MASS_HIGH} high, {SHAPE_MASS_LOW}-{SHAPE_MASS_HIGH} mostly_high, "
+                          f"<{SHAPE_MASS_LOW} low (reading downgraded)"},
+            "features": rows}, f, indent=2)
+    print("[density] shape-mass verdicts (high / mostly_high / low):", flush=True)
+    for n, r in rows.items():
+        print(f"  {n:8s} band [{r['band_lo']:+.2f}, {r['band_hi']:+.2f}] "
+              f"ratio {r['shape_mass_ratio']:.3f} -> {r['verdict']}", flush=True)
+    return rows
+
+
 # ---------------------------------------------------------------- atlas figure
 
 
-def make_atlas(xs, phi, imp, names, strongest, shape_df, snap_df):
+def make_atlas(xs, phi, imp, names, strongest, shape_df, snap_df, dens):
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
@@ -395,17 +455,46 @@ def make_atlas(xs, phi, imp, names, strongest, shape_df, snap_df):
         hi = strongest[i]
         name = names[i]
         sh = sidx.loc[name]
+        d = dens[name]
+        # low-density tails: shaded + strongest edge faded there (extrapolated, unreadable)
+        in_band = (xs >= d["lo"]) & (xs <= d["hi"])
+        for x0, x1 in [(KAN_GRID_RANGE[0], d["lo"]), (d["hi"], KAN_GRID_RANGE[1])]:
+            if x1 > x0:
+                ax.axvspan(x0, x1, color="0.55", alpha=0.16, lw=0)
+        ax2 = ax.twinx()
+        bedges = np.linspace(KAN_GRID_RANGE[0], KAN_GRID_RANGE[1], DENSITY_BINS + 1)
+        centers = 0.5 * (bedges[:-1] + bedges[1:])
+        ax2.fill_between(centers, d["bin_shares"], step="mid",
+                         color="steelblue", alpha=0.13, lw=0)
+        ax2.set_ylim(0, float(d["bin_shares"].max()) * 5.0)  # histogram hugs the bottom fifth
+        ax2.set_yticks([])
+        ax2.spines[:].set_visible(False)
+        ax.set_zorder(ax2.get_zorder() + 1)
+        ax.patch.set_visible(False)
         ax.plot(xs, curves, color="steelblue", alpha=0.18, lw=0.7)
-        ax.plot(xs, curves[:, hi], color="crimson", lw=1.7)
+        y_hi = curves[:, hi]
+        ax.plot(xs[in_band], y_hi[in_band], color="crimson", lw=1.7)
+        ax.plot(xs[~in_band], y_hi[~in_band], color="crimson", lw=1.7, alpha=0.25)
         ax.axhline(0, color="gray", lw=0.4, ls=":")
+        ax.set_xlim(KAN_GRID_RANGE)
         ax.set_title(f"{name}\nshape: {sh['shape_label']} | snap: {snap_best.get(name, '—')}",
                      fontsize=8.5)
         ax.set_xlabel("normalized feature (RobustZScoreNorm, clipped ±3)", fontsize=7)
         ax.set_ylabel("activation", fontsize=7)
         ax.tick_params(labelsize=7)
+    handles = [plt.Line2D([], [], color="crimson", lw=1.7, label="strongest edge (faded = low-density zone)"),
+               plt.Line2D([], [], color="steelblue", alpha=0.18, lw=6, label="all 24 edge curves"),
+               plt.Rectangle((0, 0), 1, 1, fc="steelblue", alpha=0.13, label="train input density (histogram, right-free twin axis)"),
+               plt.Rectangle((0, 0), 1, 1, fc="0.55", alpha=0.16, label="low-density tails")]
+    fig.legend(handles=handles, loc="lower center", ncol=4, fontsize=7, frameon=False)
     fig.suptitle("B4: KAN first-layer spline atlas — top-12 features by edge norm, "
                  "strongest edge highlighted, shape adjudicated + symbolic snap", fontsize=11)
-    fig.tight_layout()
+    fig.text(0.5, 0.022,
+             f"density caliber: train-set histogram {DENSITY_BINS} bins on [-3,3]; "
+             f"low-density zone = train mass outside the {DENSITY_TAIL_Q}–{100-DENSITY_TAIL_Q} "
+             f"percentile band (gray shading; spline there is extrapolation — do not read)",
+             ha="center", fontsize=7.5)
+    fig.tight_layout(rect=[0, 0.05, 1, 1])
     fig.savefig(OUT / "spline_curves_top12_labeled.png", dpi=160)
     plt.close(fig)
     print(f"[atlas] -> {OUT}/spline_curves_top12_labeled.png", flush=True)
@@ -424,7 +513,10 @@ def main():
     lgb_df, lgb_meta = run_lgb()
     imp_df = pd.read_csv(OUT / "kan_edge_importance.csv")
     cmp_df, summary = run_compare(imp_df, lgb_df)
-    make_atlas(xs, phi, imp, names, strongest, shape_df, snap_df)
+    Xtr, _, feat_names_tr = xy(pd.read_parquet(CACHE / "train.parquet"))
+    dens = train_density([names[i] for i in np.argsort(-imp)[:TOP_PLOT]], Xtr, feat_names_tr)
+    dump_density_report(xs, phi, imp, names, strongest, Xtr, feat_names_tr)
+    make_atlas(xs, phi, imp, names, strongest, shape_df, snap_df, dens)
     print("run_b4_explain DONE", flush=True)
 
 
