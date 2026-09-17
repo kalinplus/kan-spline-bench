@@ -84,17 +84,19 @@ KANLayer），报告相对原 KAN 的 RankIC 保留比例。脚本：`scripts/ru
 
 ### 3.1 口径核实：逐字段标注 `metrics.json` 的 `backtest` 真实含义
 
-源头 `scripts/run_b1.py:210-211`：第 210 行对**超额**序列 `report["return"] − report["bench"]` 调
-qlib `risk_analysis`（默认 `freq="day"` → **N=238**、`mode="sum"`），第 211 行又把
-`annualized_return` **覆盖**成 `risk_analysis(report["return"]).iloc[0, 0]`，即**绝对**序列的
-第一行 `mean`。于是同一个字典里混了两条序列，且两个字段名是错的：
+源头 `scripts/run_b1.py:210-211`（**已在 #32 修正**）：第 210 行对**超额**序列
+`report["return"] − report["bench"]` 调 qlib `risk_analysis`（默认 `freq="day"` → **N=238**、
+`mode="sum"`），原第 211 行又把 `annualized_return` **覆盖**成
+`risk_analysis(report["return"]).iloc[0, 0]`，即**绝对**序列的第一行 `mean`。于是同一个字典里混了
+两条序列，且字段名与值不符。本报告的核实对象是修正前的历史产物，这些磁盘产物的字段已改名（下表
+左列即现名）：
 
 | `metrics.json` 字段 | 真实含义（不是字段名字面） | 依据 |
 |---|---|---|
 | `mean` | **超额**收益（`return − bench`，bench = SH000300）日均 | run_b1.py:210 → risk_analysis(超额) |
 | `std` | 超额收益日标准差（ddof=1） | 同上 |
 | `information_ratio` | 超额 `mean/std × √238`（qlib 日频 **N=238，不是 252**） | evaluate.py:53/85；复算吻合 0.918102 / 0.362998 |
-| `annualized_return` | **被覆盖成绝对收益 `return` 的日均值**——字段名错误，既不是年化也不是超额口径 | run_b1.py:211（`.iloc[0,0]` = 第一行 `mean`） |
+| `annualized_return`（磁盘产物已改名 `abs_daily_return_mean`） | **绝对收益 `return` 的日均值**——修正前字段名与值不符，既不是年化也不是超额口径 | 修正前 run_b1.py:211（`.iloc[0,0]` = 第一行 `mean`） |
 | `max_drawdown` | **超额收益的算术累计回撤** `(cumsum − cumsum.cummax()).min()`，**不是**净值百分比回撤 | evaluate.py:70（`mode="sum"`） |
 | `daily_turnover_mean` | 逐日 `report["turnover"]` 均值 | run_b1.py:212 |
 
@@ -103,7 +105,13 @@ qlib `risk_analysis`（默认 `freq="day"` → **N=238**、`mode="sum"`），第
 `run_master_gate.py:163`、`run_master_repro2017.py:133`、`run_kronos_zs.py:151`、`run_prism_eval.py:65`，
 以及 Track B 的 `run_b1.py:211` / `run_b8_csi500.py:228` / `run_b10_hybrid.py:489` /
 `portfolio_attr.py:121`。反例是 `common/scripts/wp5_cost.py:40`，它用
-`risk_analysis(r).iloc[:,0]["annualized_return"]` 取的是**真**年化行——即项目内两种写法并存。
+`risk_analysis(r).iloc[:,0]["annualized_return"]` 取的是**真**年化行——修正前项目内两种写法并存。
+
+**修正已落地**（#32）：上述 12 处已统一为 `wp5_cost.py:40` 的写法，此后新跑实验的
+`annualized_return` 是**绝对（组合）年化** `mean × 238`（同字典其余字段仍是超额口径，差异见上表）。
+历史产物的旧字段已在磁盘上改名为 `abs_daily_return_mean`：65 个 `metrics.json` / `summary.json`
+（`common/runs/` 下，含 B1/B8/B10/B12/baseline/hybrid/symbolic-distill 等）与
+`portfolio-attr/sens_matrix.csv` 表头；`wp5_report/cost.json` 本就由正确写法产生（值是真年化），未动。
 
 **净值曲线必须用 `account` 列**：`backtest_report.csv` 的 `value` 是持仓市值、`cash` 是现金，
 **两者之和才是组合总资产**（已用 `allclose` 验证 `value + cash == account`）。净值曲线与百分比回撤
@@ -252,10 +260,11 @@ RobustZScoreNorm（clip ±3）后的标准化输入 x∈[−3,3]；`a/b/c/d` 就
 - **结论口径分层**：RankIC 保留 97.2%、IC 保留 68.3%、long_short 日收益保留约 53%；**头部
   （topk=30）组合指标在本区间蒸馏占优，而全截面排序区分度对照更强**。引用时必须写明是哪个
   口径；「无损」只在 RankIC 口径下成立，不得写成「蒸馏优于原模型」。
-- **`metrics.json` 的 `backtest` 混用两条序列且两个字段名错误**（见 3.1，逐字段表）：
-  `mean`/`std`/`information_ratio`/`max_drawdown` 是**超额**口径，而 `annualized_return` 被覆盖成
-  **绝对收益的日均值**（既非年化也非超额）。逐字段引用时必须标注真实含义，不得采信字段名；
-  同一错命名在 `common/scripts/run_baselines_builtin.py:86` 等 13 处重复（反例 `wp5_cost.py:40`）。
+- **`metrics.json` 的 `backtest` 混用两条序列**（见 3.1，逐字段表）：`mean`/`std`/
+  `information_ratio`/`max_drawdown` 是**超额**口径，修正前名为 `annualized_return` 的字段实为
+  **绝对收益的日均值**（既非年化也非超额）。同一错命名曾在 `common/scripts/run_baselines_builtin.py:86`
+  等 12 处重复（反例 `wp5_cost.py:40`）；**已在 #32 统一修正**，历史产物的该字段已改名为
+  `abs_daily_return_mean`。引用修正前的旧产物时必须按字段表核对真实含义，不得采信旧字段名。
 - **净值与回撤必须用 `account` 列**（= `value` + `cash`）；用 `value` 会得到错误回撤（−18.61% vs
   −16.41%）。且 `(1+return).prod() − 1` ≠ 账户增长（0.672 vs 0.585），CAGR 必须从 `account` 复利算。
 - **年化有两个并存口径**：qlib `mode="sum"` 的算术 `mean × 238` 与 `account` 净值的几何 CAGR；
