@@ -208,7 +208,7 @@ def evaluate_dump(pred: pd.Series, out_dir: Path):
     )
     report.to_csv(out_dir / "backtest_report.csv")
     perf = {k: float(v) for k, v in risk_analysis(report["return"] - report["bench"]).iloc[:, 0].items()}
-    perf["annualized_return"] = float(risk_analysis(report["return"]).iloc[0, 0])
+    perf["annualized_return"] = float(risk_analysis(report["return"]).iloc[:, 0]["annualized_return"])
     perf["daily_turnover_mean"] = float(report["turnover"].mean())
     metrics["backtest"] = perf
     return metrics

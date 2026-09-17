@@ -486,7 +486,7 @@ def stage_backtest():
             "excess_annualized_return": float(ex["annualized_return"]),
             "excess_information_ratio": float(ex["information_ratio"]),
             "excess_max_drawdown": float(ex["max_drawdown"]),
-            "annualized_return": float(risk_analysis(report["return"]).iloc[0, 0]),
+            "annualized_return": float(risk_analysis(report["return"]).iloc[:, 0]["annualized_return"]),
             "daily_turnover_mean": float(report["turnover"].mean()),
             "config": "B1 main config: topk30/drop1, SH000300, open 5bp/close 15bp, limit 0.095",
             "backtest_seconds": time.perf_counter() - t0,
