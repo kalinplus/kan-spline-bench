@@ -93,8 +93,8 @@ def prepare_data():
         ],
         learn_processors=[{"class": "DropnaLabel"}, {"class": "CSZScoreNorm", "kwargs": {"fields_group": "label"}}],
     )
-    dataset = DatasetH(handler, SEGMENTS)
-
+    dataset = DatasetH(handler, SEGMENTS)  # 把 handler 里配置的数据根据 SEGMENTS 分割成 train, valid 和 test
+    
     for seg in ("train", "valid"):
         df = dataset.prepare(seg, col_set=["feature", "label"], data_key=DataHandler.DK_L)
         df.to_parquet(CACHE / f"{seg}.parquet")

@@ -28,7 +28,7 @@
 
 **口径注**：train 是样本内拟合（不是预测能力）；valid 是选择集（早停、Ridge alpha 都在它上面选），数字偏乐观；train/valid 用的是缓存里逐日截面标准化后的标签，test 用原始收益标签——**RankIC/RankICIR 因日内单调变换不变，三层可比；Pearson IC 不可比，因此 IC 只在 §1.3 列 test 值**；2026 只有 133 个交易日。
 
-### 1.2 组合层 test 分年（bp/d，1 bp = 0.01%，×252 ≈ 年化）
+### 1.2 组合层 test 分年（bp/d，1 bp = 0.01%，×238 ≈ 年化）
 
 三段拆开看：**选股上限（ideal top30，无成本无约束）→ 摩擦（friction）→ 实际到账（actual 日超额）**。
 
@@ -115,7 +115,7 @@
 
 回测配置与 B1 一致：`TopkDropoutStrategy(topk=30, n_drop=1)`、benchmark SH000300、`limit_threshold 0.095`、`trade_unit 100`、`min_cost 5`、成本 open 5bp / close 15bp、deal price close。
 
-- **年化超额收益**：相对 benchmark 的算术年化（mean × 252）；**IR**：日超额 mean / std × √252；**超额最大回撤**：cumsum 曲线的最大回撤（同 qlib 口径）；**日均换手率**：报告 turnover 均值。
+- **年化超额收益**：相对 benchmark 的算术年化（mean × **238**）；**IR**：日超额 mean / std × √**238**；**超额最大回撤**：cumsum 曲线的最大回撤（同 qlib 口径）；**日均换手率**：报告 turnover 均值。年化因子是 qlib 的日频 `Freq.NORM_FREQ_DAY = 238`（**不是 252**），本项目的回测指标全部由 qlib `risk_analysis` 产出；注意 `common/eval/backtest_metrics.py` 里的 252 与该注释「与 qlib 一致」的说法是错的（该模块未参与 B 系列回测）。另有一套并存的净值口径：`account` 列的几何 CAGR。
 - **配对显著性**：B6 用 paired bootstrap（10k，seed 42）给出超额与模型配对差的 95% CI + paired t 的 p 值；B12 对日度配对检验用 Newey-West（lag=10）+ block bootstrap（20 块 / 10000 次），因为日度序列有自相关。
 - **敏感性矩阵**：topk {10,30,50} × n_drop {1,5} × 信号频率 {daily, weekly, monthly}，4 模型 × 8 配置。
 - **drag 分解**：`ideal top30 − actual = cost + friction`（§6 解释机制）。
@@ -139,7 +139,7 @@
 
 **分层收益 / 单调性**：缺陷是单调性只由 10 个点算出，样本极小；层间等权忽略了市值与流动性；层均值掩盖层内分布，多空价差可能由少数股票贡献。项目里的现成反例：MLP 单调性最低（0.78）但多空年化最高（31.66%），说明收益集中在头部几层，单调性差 ≠ 赚不到钱。
 
-**组合层四个指标**：共同缺陷是**单条路径的单点估计**，且对配置极度敏感（B6 实测：同一批预测只换 topk/n_drop/频率，KAN−Linear 差值在 −8.2 ~ +11.4 pp 之间无规律翻转）；IR 用算术年化 + √252，忽略自相关与波动率聚集；换手率只是成本的代理，不含冲击成本；最大回撤样本依赖性最强，一条路径上一个极值就定死了。
+**组合层四个指标**：共同缺陷是**单条路径的单点估计**，且对配置极度敏感（B6 实测：同一批预测只换 topk/n_drop/频率，KAN−Linear 差值在 −8.2 ~ +11.4 pp 之间无规律翻转）；IR 用算术年化 + √238，忽略自相关与波动率聚集；换手率只是成本的代理，不含冲击成本；最大回撤样本依赖性最强，一条路径上一个极值就定死了。
 
 ---
 
